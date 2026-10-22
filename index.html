@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#060d0a">
+<title>Покерный клуб</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,500;0,600;0,700;1,500;1,600&family=Manrope:wght@200;300;400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="static/app.css?v=3">
+</head>
+<body>
+
+<!-- Заставка -->
+<div id="splash">
+  <div class="splash-glow"></div>
+  <div class="splash-cards">
+    <div class="pcard"><div class="pc-in"><div class="pc-back"></div><div class="pc-face"><b>A</b><i>♠</i></div></div></div>
+    <div class="pcard"><div class="pc-in"><div class="pc-back"></div><div class="pc-face red"><b>K</b><i>♥</i></div></div></div>
+    <div class="pcard"><div class="pc-in"><div class="pc-back"></div><div class="pc-face red"><b>Q</b><i>♦</i></div></div></div>
+    <div class="pcard"><div class="pc-in"><div class="pc-back"></div><div class="pc-face"><b>J</b><i>♣</i></div></div></div>
+  </div>
+  <div class="splash-text">
+    <div class="eyebrow" id="splashClub">Покерный клуб</div>
+    <h1 class="display" id="splashName">Добро пожаловать</h1>
+    <div class="splash-line"></div>
+  </div>
+</div>
+
+<main id="app">
+  <section class="view on" id="v-home"></section>
+  <section class="view" id="v-tours"></section>
+  <section class="view" id="v-rating"></section>
+  <section class="view" id="v-profile"></section>
+  <section class="view sub" id="v-detail"></section>
+  <section class="view sub" id="v-live"></section>
+  <section class="view sub" id="v-create"></section>
+  <section class="view sub" id="v-player"></section>
+  <section class="view sub" id="v-settings"></section>
+  <section class="view sub" id="v-structure"></section>
+  <section class="view sub" id="v-broadcast"></section>
+  <section class="view sub" id="v-chips"></section>
+</main>
+
+<nav class="tabbar" id="tabbar">
+  <button data-act="tab" data-tab="home" class="on" aria-label="Главная">
+    <svg viewBox="0 0 24 24"><path d="M4 10.5 12 4l8 6.5V19a1 1 0 0 1-1 1h-4.5v-5.5h-5V20H5a1 1 0 0 1-1-1z"/></svg><span>Главная</span></button>
+  <button data-act="tab" data-tab="tours" aria-label="Турниры">
+    <svg viewBox="0 0 24 24"><rect x="3.5" y="6.5" width="11" height="14" rx="2"/><path d="M8 3.5h10.5a2 2 0 0 1 2 2V17"/></svg><span>Турниры</span></button>
+  <button data-act="live" class="fab" aria-label="Игра">
+    <span class="fab-chip"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="4.5"/><path d="M12 3.5v3M12 17.5v3M3.5 12h3M17.5 12h3"/></svg></span><span>Игра</span></button>
+  <button data-act="tab" data-tab="rating" aria-label="Рейтинг">
+    <svg viewBox="0 0 24 24"><path d="M8 20.5h8M12 16.5v4M7 4h10v5a5 5 0 0 1-10 0z"/><path d="M17 5.5h2.5a2.5 2.5 0 0 1-2.8 4M7 5.5H4.5a2.5 2.5 0 0 0 2.8 4"/></svg><span>Рейтинг</span></button>
+  <button data-act="tab" data-tab="profile" aria-label="Профиль">
+    <svg viewBox="0 0 24 24"><circle cx="12" cy="8.5" r="4"/><path d="M4.5 20.5a7.5 7.5 0 0 1 15 0"/></svg><span>Профиль</span></button>
+</nav>
+
+<div id="sheet" class="sheet" aria-hidden="true"><div class="sheet-bg" data-act="sheet-close"></div><div class="sheet-panel"><div class="sheet-grip"></div><div id="sheetBody"></div></div></div>
+<div id="overlay"></div>
+<div id="toast"></div>
+<input type="file" id="photoInput" accept="image/*" hidden>
+
+<script src="static/app.js?v=3"></script>
+</body>
+</html>
