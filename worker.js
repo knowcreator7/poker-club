@@ -606,7 +606,7 @@ const ACHIEVEMENTS = [
   ["legend", "★", "Легенда клуба", "Двадцать пять турниров"], ["hunter", "✦", "Охотник", "Три нокаута за один турнир"],
   ["collector", "✦", "Коллекционер", "Двадцать нокаутов всего"], ["comeback", "♥", "Камбэк", "Победа после двух и более ребаев"],
   ["iron", "◆", "Железный", "Победа без единого ребая"], ["bubble", "○", "Король пузыря", "Трижды финишировать четвёртым"],
-  ["oracle", "◎", "Оракул", "Три верных прогноза на победителя"], ["bookie", "◈", "Букмекер", "Выиграть ставку с кэфом от ×3"],
+  ["oracle", "◎", "Оракул", "Трижды угадать победителя турнира — прогнозом или ставкой"], ["bookie", "◈", "Букмекер", "Выиграть ставку с кэфом от ×3"],
   ["allin", "⬢", "Ва-банк", "Поставить все очки за игру и выиграть"], ["champion", "♚", "Чемпион месяца", "Стать первым в рейтинге месяца"],
 ];
 
@@ -631,8 +631,12 @@ async function achievements(db, uid, history) {
     if (h.bet_status === "won" && h.bet_stake && h.bet_stake >= (h.base_points || 0)) mark("allin", h);
     if (h.place === 4) { fourth++; if (fourth === 3) mark("bubble", h); }
   }
-  const preds = await db.q(`SELECT t.id, t.title, t.starts_at FROM predictions pr JOIN tournaments t ON t.id = pr.tournament_id
-     WHERE pr.tg_id=? AND pr.correct=1 ORDER BY t.starts_at, t.id`, [uid]);
+  // угаданный победитель: бесплатный прогноз или выигранная ставка (один раз за турнир)
+  const preds = await db.q(`SELECT t.id, t.title, t.starts_at FROM tournaments t
+     WHERE t.status='finished' AND (
+       EXISTS (SELECT 1 FROM predictions pr WHERE pr.tournament_id=t.id AND pr.tg_id=? AND pr.correct=1)
+       OR EXISTS (SELECT 1 FROM entries e WHERE e.tournament_id=t.id AND e.tg_id=? AND e.bet_status='won'))
+     ORDER BY t.starts_at, t.id`, [uid, uid]);
   if (preds.length >= 3) mark("oracle", preds[2]);
   const thisMonth = new Date().toISOString().slice(0, 7);
   const months = [...new Set(history.filter(h => h.starts_at).map(h => h.starts_at.slice(0, 7)))].sort();
