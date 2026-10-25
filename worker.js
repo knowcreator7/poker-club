@@ -592,12 +592,21 @@ async function stats(db, ctx, period) {
   const rows = await ratingRows(db, period);
   const months = (await db.q(`SELECT DISTINCT substr(starts_at,1,7) AS m FROM tournaments WHERE status='finished' AND starts_at IS NOT NULL ORDER BY m DESC`)).map(r => r.m);
   const [w, a] = periodWhere(period);
-  const oracles = await db.q(`SELECT p.tg_id, p.name, SUM(pr.correct) AS hits, COUNT(*) AS tries
-    FROM predictions pr JOIN players p ON p.tg_id = pr.tg_id JOIN tournaments t ON t.id = pr.tournament_id AND t.status='finished'
-    WHERE 1=1 ${w} GROUP BY p.tg_id HAVING hits > 0 ORDER BY hits DESC, tries ASC LIMIT 10`, a);
+  const oracles = await db.q(`SELECT p.tg_id, p.name, SUM(g.hit) AS hits, COUNT(*) AS tries
+    FROM (${GUESS_SQL(w)}) g JOIN players p ON p.tg_id = g.tg_id
+    GROUP BY p.tg_id HAVING hits > 0 ORDER BY hits DESC, tries ASC LIMIT 10`, a);
   const games = (await db.q(`SELECT COUNT(*) AS n FROM tournaments t WHERE status='finished' ${w}`, a, true)).n;
   return { rows, months, oracles, games };
 }
+
+// угаданные победители: прогноз или ставка, не больше одного раза за турнир
+const GUESS_SQL = w => `
+SELECT u.tg_id, t.id AS tid, t.title, t.starts_at, MAX(u.hit) AS hit
+FROM (SELECT tournament_id, tg_id, COALESCE(correct, 0) AS hit FROM predictions
+      UNION ALL SELECT tournament_id, tg_id, (bet_status = 'won') FROM entries WHERE bet_status IN ('won','lost')) u
+JOIN tournaments t ON t.id = u.tournament_id AND t.status = 'finished'
+WHERE 1=1 ${w}
+GROUP BY u.tg_id, t.id`;
 
 const ACHIEVEMENTS = [
   ["debut", "♠", "Дебют", "Сыграть первый турнир"], ["first_win", "♛", "Первая корона", "Выиграть турнир"],
@@ -608,6 +617,9 @@ const ACHIEVEMENTS = [
   ["iron", "◆", "Железный", "Победа без единого ребая"], ["bubble", "○", "Король пузыря", "Трижды финишировать четвёртым"],
   ["oracle", "◎", "Оракул", "Трижды угадать победителя турнира — прогнозом или ставкой"], ["bookie", "◈", "Букмекер", "Выиграть ставку с кэфом от ×3"],
   ["allin", "⬢", "Ва-банк", "Поставить все очки за игру и выиграть"], ["champion", "♚", "Чемпион месяца", "Стать первым в рейтинге месяца"],
+  ["revenge", "⚔\uFE0E", "Месть", "Выбить того, кто раньше выбивал тебя"], ["sniper", "⌖", "Снайпер", "Выбить победителя прошлого турнира"],
+  ["headsup", "⚑", "Хедз-ап мастер", "Трижды выиграть финальную дуэль, лично выбив последнего соперника"],
+  ["first_blood", "✧", "Первая кровь", "Сделать первое выбивание за вечер"], ["kamikaze", "☄\uFE0E", "Камикадзе", "Трижды вылететь первым"],
 ];
 
 async function achievements(db, uid, history) {
@@ -631,13 +643,32 @@ async function achievements(db, uid, history) {
     if (h.bet_status === "won" && h.bet_stake && h.bet_stake >= (h.base_points || 0)) mark("allin", h);
     if (h.place === 4) { fourth++; if (fourth === 3) mark("bubble", h); }
   }
-  // угаданный победитель: бесплатный прогноз или выигранная ставка (один раз за турнир)
-  const preds = await db.q(`SELECT t.id, t.title, t.starts_at FROM tournaments t
-     WHERE t.status='finished' AND (
-       EXISTS (SELECT 1 FROM predictions pr WHERE pr.tournament_id=t.id AND pr.tg_id=? AND pr.correct=1)
-       OR EXISTS (SELECT 1 FROM entries e WHERE e.tournament_id=t.id AND e.tg_id=? AND e.bet_status='won'))
-     ORDER BY t.starts_at, t.id`, [uid, uid]);
+  const preds = (await db.q(`SELECT tid AS id, title, starts_at FROM (${GUESS_SQL("")}) g WHERE g.tg_id=? AND g.hit=1 ORDER BY starts_at, tid`, [uid]));
   if (preds.length >= 3) mark("oracle", preds[2]);
+  // нокауты по всем сыгранным турнирам — для «Мести», «Снайпера», «Хедз-апа», «Первой крови»
+  const all = await db.q(`SELECT e.tournament_id AS tid, e.tg_id, e.place, e.knocked_by, e.busted_at, t.title, t.starts_at
+     FROM entries e JOIN tournaments t ON t.id = e.tournament_id AND t.status='finished'
+     WHERE e.status='in' ORDER BY t.starts_at, t.id`);
+  const byT = new Map();
+  for (const r of all) { if (!byT.has(r.tid)) byT.set(r.tid, []); byT.get(r.tid).push(r); }
+  const knockedMe = new Set();
+  let prevWinner = null, duels = 0, lasts = 0;
+  for (const rows of byT.values()) {
+    const h = { id: rows[0].tid, title: rows[0].title, starts_at: rows[0].starts_at };
+    const mine = rows.find(r => r.tg_id === uid);
+    const victims = rows.filter(r => r.knocked_by === uid).map(r => r.tg_id);
+    if (mine) {
+      if (victims.some(v => knockedMe.has(v))) mark("revenge", h);
+      if (prevWinner && prevWinner !== uid && victims.includes(prevWinner)) mark("sniper", h);
+      const second = rows.find(r => r.place === 2);
+      if (mine.place === 1 && second && second.knocked_by === uid) { duels++; if (duels === 3) mark("headsup", h); }
+      const busted = rows.filter(r => r.busted_at).sort((a, b) => a.busted_at < b.busted_at ? -1 : 1);
+      if (busted.length && busted[0].knocked_by === uid) mark("first_blood", h);
+      if (rows.length >= 3 && mine.place === rows.length) { lasts++; if (lasts === 3) mark("kamikaze", h); }
+      if (mine.knocked_by) knockedMe.add(mine.knocked_by);
+    }
+    const w = rows.find(r => r.place === 1); prevWinner = w ? w.tg_id : null;
+  }
   const thisMonth = new Date().toISOString().slice(0, 7);
   const months = [...new Set(history.filter(h => h.starts_at).map(h => h.starts_at.slice(0, 7)))].sort();
   let champs = 0;
@@ -650,6 +681,7 @@ async function achievements(db, uid, history) {
   const prog = {
     debut: [games, 1], first_win: [wins, 1], hat_trick: [wins, 3], dynasty: [wins, 10], steady: [bestStreak, 3],
     regular: [games, 10], legend: [games, 25], collector: [kos, 20], bubble: [fourth, 3], oracle: [preds.length, 3],
+    headsup: [duels, 3], kamikaze: [lasts, 3],
   };
   return ACHIEVEMENTS.map(([key, icon, title, desc]) => {
     const p = prog[key];
@@ -687,8 +719,7 @@ async function profile(db, ctx, pid) {
      JOIN tournaments t ON t.id=e.tournament_id AND t.status='finished' WHERE e.tg_id=? GROUP BY e.knocked_by ORDER BY n DESC LIMIT 1`, [uid], true);
   const victim = await db.q(`SELECT p.tg_id, p.name, COUNT(*) AS n FROM entries e JOIN players p ON p.tg_id = e.tg_id
      JOIN tournaments t ON t.id=e.tournament_id AND t.status='finished' WHERE e.knocked_by=? GROUP BY e.tg_id ORDER BY n DESC LIMIT 1`, [uid], true);
-  const hits = await db.q(`SELECT COALESCE(SUM(correct),0) AS h, COUNT(*) AS n FROM predictions pr
-     JOIN tournaments t ON t.id=pr.tournament_id AND t.status='finished' WHERE pr.tg_id=?`, [uid], true);
+  const hits = await db.q(`SELECT COALESCE(SUM(hit),0) AS h, COUNT(*) AS n FROM (${GUESS_SQL("")}) g WHERE g.tg_id=?`, [uid], true);
   return {
     player: p, stats: s, rank: ri >= 0 ? ri + 1 : null, history: history.slice().reverse().slice(0, 40),
     monthly, rivals, nemesis, victim, predictions: hits, achievements: await achievements(db, uid, history),

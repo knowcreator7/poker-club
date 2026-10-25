@@ -64,7 +64,8 @@ const I = {
   chev: '<svg class="chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>',
   card: '<svg viewBox="0 0 24 24"><rect x="4" y="3.5" width="16" height="17" rx="2.5"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>',
   megaphone: '<svg viewBox="0 0 24 24"><path d="M4 10v4h3l7 4V6L7 10z"/><path d="M17.5 9.5a3.5 3.5 0 0 1 0 5"/></svg>',
-  list: '<svg viewBox="0 0 24 24"><path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01"/></svg>'
+  list: '<svg viewBox="0 0 24 24"><path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01"/></svg>',
+  book: '<svg viewBox="0 0 24 24"><path d="M5 4.5A1.5 1.5 0 0 1 6.5 3H19v15H6.5A1.5 1.5 0 0 0 5 19.5zM5 19.5A1.5 1.5 0 0 0 6.5 21H19"/><path d="M9 7h6M9 10.5h4"/></svg>'
 };
 
 /* ═════════════════ Звук ═════════════════ */
@@ -644,7 +645,7 @@ function renderLive() {
   const alive = t ? t.entries.filter(e => e.place == null) : [];
   const out = t ? t.entries.filter(e => e.place != null).sort((a, b) => a.place - b.place) : [];
   v.innerHTML = `${topbar(`<div class="eyebrow" style="text-align:center">${t ? esc(t.title) : "Таймер блайндов"}</div>`,
-      `<button class="icon-btn" data-act="sound" aria-label="Звук">${Snd.on ? I.sound : I.mute}</button>`)}
+      `<button class="icon-btn" data-act="cheat" aria-label="Шпаргалка">${I.book}</button><button class="icon-btn" data-act="sound" aria-label="Звук">${Snd.on ? I.sound : I.mute}</button>`)}
     <div class="clock-wrap">${ringSVG()}
       <div class="clock-center">
         <div class="clock-level" id="lvName">Уровень 1</div>
@@ -856,14 +857,14 @@ async function renderRating() {
   }
   list = rows.slice(3).map((r, i) => `<button class="li rise" style="--i:${i}" data-act="player" data-tg="${r.tg_id}">
       <span class="rank">${i + 4}</span>${av(r, "sm")}
-      <span class="grow"><span class="name">${esc(r.name)}</span><small>${key === "oracle" ? "верных прогнозов" : `игр ${r.games} · побед ${r.wins} · топ-3 ${r.top3}`}</small></span>
+      <span class="grow"><span class="name">${esc(r.name)}</span><small>${key === "oracle" ? "угадано победителей" : `${S.period ? "" : rankBadge(r.points, true) + " "}игр ${r.games} · побед ${r.wins} · топ-3 ${r.top3}`}</small></span>
       <span class="val">${val(r)}</span></button>`).join("");
   v.innerHTML = `<div class="topbar" style="justify-content:space-between"><h1 class="page">Рейтинг</h1>
       ${d.rows.length ? `<button class="btn btn-ghost btn-sm" data-act="season-card">${I.card}Карточка</button>` : ""}</div>
     <div class="chips">${periods.map(([p, l]) => `<button class="${p === S.period ? "on" : ""}" data-act="period" data-v="${p}">${esc(l)}</button>`).join("")}</div>
     ${seg([["points", "Очки"], ["knockouts", "Нокауты"], ["form", "Форма"], ["oracle", "Оракулы"]], key, "rsort", "", true)}
     ${rows.length ? podiumHTML(rows, val) + (list ? `<div class="list">${list}</div>` : "")
-      : `<div class="empty" style="margin-top:18px"><div class="display">${key === "oracle" ? "Оракулов пока нет" : "Пока пусто"}</div>${key === "oracle" ? "Делайте прогнозы на победителя в карточке турнира." : "За этот период ещё не сыграно ни одного турнира."}</div>`}
+      : `<div class="empty" style="margin-top:18px"><div class="display">${key === "oracle" ? "Оракулов пока нет" : "Пока пусто"}</div>${key === "oracle" ? "Угадывайте победителя прогнозом в карточке турнира или ставкой после вылета." : "За этот период ещё не сыграно ни одного турнира."}</div>`}
     <p class="dim" style="font-size:12px;margin-top:18px;line-height:1.6">Очки: последнее место — ${S.scoring.base}, каждое место выше +${S.scoring.step}, победителю +${S.scoring.winner_bonus}, за нокаут +${S.scoring.bounty}${S.scoring.rebuy_penalty ? `, за ребай −${S.scoring.rebuy_penalty}` : ""}. Выбывший может поставить свои очки на победителя: кэф ${S.scoring.margin} × число оставшихся игроков. Форма — средний процент обыгранных соперников.</p>`;
   pills(v);
   const chip = v.querySelector(".chips .on"); chip && chip.scrollIntoView({ inline: "center", block: "nearest" });
@@ -1084,6 +1085,77 @@ document.addEventListener("input", e => {
   }
 });
 
+/* ═════════════════ Звания ═════════════════ */
+const RANKS = [
+  { min: 0, name: "Новичок", icon: "♣", cls: "r0", note: "Первые шаги за столом" },
+  { min: 300, name: "Игрок", icon: "♦", cls: "r1", note: "Уже знает, когда сбросить" },
+  { min: 1000, name: "Шарк", icon: "♥", cls: "r2", note: "С ним опасно ходить в олл-ин" },
+  { min: 2500, name: "Акула", icon: "♠", cls: "r3", note: "Гроза всего клуба" },
+  { min: 5000, name: "Легенда клуба", icon: "♚", cls: "r4", note: "Имя на стене славы" },
+];
+function rankOf(points = 0) {
+  let i = 0; while (i + 1 < RANKS.length && points >= RANKS[i + 1].min) i++;
+  const cur = RANKS[i], next = RANKS[i + 1] || null;
+  const pct = next ? Math.round((points - cur.min) / (next.min - cur.min) * 100) : 100;
+  return { ...cur, idx: i, next, pct, left: next ? next.min - points : 0 };
+}
+const rankBadge = (points, small) => { const r = rankOf(points); return `<span class="rank-badge ${r.cls}${small ? " sm" : ""}"><i>${r.icon}</i>${esc(r.name)}</span>`; };
+function rankSheet(points) {
+  const me = rankOf(points);
+  openSheet(`<h3>Звания клуба</h3><p class="muted" style="font-size:13px;margin-bottom:14px">Звание растёт вместе с очками за всё время.</p>
+    <div class="rank-list">${RANKS.map((r, i) => `<div class="rank-row ${r.cls} ${i === me.idx ? "cur" : i < me.idx ? "done" : ""}">
+      <span class="rank-ico">${r.icon}</span><span class="grow"><b>${esc(r.name)}</b><small>${esc(r.note)}</small></span>
+      <span class="rank-min">${r.min ? "от " + fmt(r.min) : "старт"}</span></div>`).join("")}</div>`);
+}
+
+/* ═════════════════ Шпаргалка ═════════════════ */
+const pcard = c => { const suit = c.slice(-1), red = suit === "♥" || suit === "♦"; return `<span class="pc ${red ? "red" : ""}">${c.slice(0, -1)}<i>${suit}</i></span>`; };
+const HANDS = [
+  ["Роял-флеш", "Туз, король, дама, валет и десятка одной масти", ["A♠", "K♠", "Q♠", "J♠", "10♠"]],
+  ["Стрит-флеш", "Пять карт подряд одной масти", ["9♥", "8♥", "7♥", "6♥", "5♥"]],
+  ["Каре", "Четыре карты одного достоинства", ["Q♣", "Q♦", "Q♥", "Q♠", "7♦"]],
+  ["Фулл-хаус", "Тройка и пара", ["J♠", "J♥", "J♦", "4♣", "4♠"]],
+  ["Флеш", "Пять карт одной масти, не подряд", ["A♦", "J♦", "8♦", "6♦", "2♦"]],
+  ["Стрит", "Пять карт подряд, масти любые. Туз бывает и единицей: A-2-3-4-5", ["10♣", "9♦", "8♠", "7♥", "6♣"]],
+  ["Тройка (сет)", "Три карты одного достоинства", ["7♠", "7♥", "7♣", "K♦", "2♠"]],
+  ["Две пары", "Две разные пары", ["K♥", "K♣", "9♠", "9♦", "A♣"]],
+  ["Пара", "Две карты одного достоинства", ["10♥", "10♠", "A♦", "8♣", "4♥"]],
+  ["Старшая карта", "Ничего не собрано — решает самая старшая карта", ["A♠", "J♦", "8♥", "5♣", "3♠"]],
+];
+const OUTS = [
+  ["Флеш-дро + стрит-дро", 15, 54, 33], ["Флеш-дро", 9, 35, 20], ["Двусторонний стрит-дро", 8, 32, 17],
+  ["Две оверкарты", 6, 24, 13], ["Гатшот (стрит в дырку)", 4, 17, 9], ["Пара → сет", 2, 8, 4],
+];
+const MATCHUPS = [
+  ["Пара старше против пары младше", "QQ vs 99", 81], ["Пара против двух оверкарт", "88 vs AK", 55],
+  ["Пара против двух младших карт", "JJ vs 76", 85], ["Доминирование по кикеру", "AK vs AQ", 74],
+  ["Две старшие против двух младших", "AK vs 87", 63],
+];
+const CHANCES = [
+  ["Получить карманную пару", "6%"], ["Получить тузы", "0,5%"], ["Собрать сет на флопе с карманной парой", "12%"],
+  ["Флеш сразу на флопе с одномастными", "0,8%"], ["Флеш-дро на флопе с одномастными", "11%"], ["Хотя бы пара на флопе с двумя разными картами", "32%"],
+];
+let cheatTab = "hands";
+function renderCheat() {
+  const tab = cheatTab;
+  $("v-cheat").innerHTML = `${topbar()}<div class="eyebrow">За столом</div><h2 class="title" style="margin:10px 0 18px">Шпаргалка</h2>
+    ${seg([["hands", "Комбинации"], ["odds", "Шансы"]], tab, "cheat-tab", "", true)}
+    ${tab === "hands" ? `<p class="muted" style="font-size:13px;margin:14px 0 6px">От сильной к слабой. Из семи карт (две свои + пять на столе) берутся лучшие пять.</p>
+      <div class="list">${HANDS.map(([n, d, cs], i) => `<div class="hand-row rise" style="--i:${i}">
+        <span class="hand-n">${i + 1}</span><span class="grow"><b>${n}</b><small>${d}</small><span class="pcs">${cs.map(pcard).join("")}</span></span></div>`).join("")}</div>
+      <p class="dim" style="font-size:12px;margin-top:14px;line-height:1.6">Масти равны. Если комбинации одинаковые, сравнивают старшие карты, потом кикер — оставшуюся карту. Полностью одинаковые руки делят банк.</p>`
+    : `<div class="section"><h3>Ауты</h3><span class="muted" style="font-size:12.5px">шанс собрать к риверу</span></div>
+      <div class="odds-tbl"><div class="odds-h"><span>Что ждёшь</span><span>аутов</span><span>с флопа</span><span>с тёрна</span></div>
+        ${OUTS.map(([n, o, f, t]) => `<div class="odds-r"><span>${n}</span><b>${o}</b><b class="gold-text">${f}%</b><b>${t}%</b></div>`).join("")}</div>
+      <div class="panel tip-2-4"><b>Правило 2 и 4</b><span>Умножь число аутов на 4 на флопе или на 2 на тёрне — получишь примерный шанс в процентах.</span></div>
+      <div class="section"><h3>Кто фаворит до флопа</h3></div>
+      <div class="list">${MATCHUPS.map(([n, ex, p]) => `<div class="li"><span class="grow"><span class="name">${n}</span><small>${ex}</small></span>
+        <span class="mu-bar"><i style="width:${p}%"></i></span><b class="num">${p}%</b></div>`).join("")}</div>
+      <div class="section"><h3>Полезно знать</h3></div>
+      <div class="list">${CHANCES.map(([n, p]) => `<div class="li"><span class="grow"><span class="name">${n}</span></span><b class="num gold-text">${p}</b></div>`).join("")}</div>`}`;
+  pills($("v-cheat"));
+}
+
 /* ═════════════════ Профиль ═════════════════ */
 const achHTML = a => `<button type="button" class="ach ${a.got ? "" : "locked"}" data-ach="${esc(JSON.stringify(a))}" aria-label="${esc(a.title + ": " + a.desc)}"><div class="medal ${a.got ? "shine" : "locked"}">${a.icon}${a.times ? `<i class="ach-x">×${a.times}</i>` : ""}</div><span>${esc(a.title)}</span></button>`;
 
@@ -1158,8 +1230,13 @@ function profileHTML(d, own) {
   return `
     <div class="prof-head rise">${av(d.player, "lg ring")}<div class="grow">
       <h2>${esc(d.player.name)}</h2>
+      <button class="rank-btn" data-act="ranks" data-p="${s.points || 0}">${rankBadge(s.points || 0)}</button>
       <div class="muted" style="font-size:13.5px;margin-top:6px">${d.rank ? `<span class="gold-text" style="font-weight:700">#${d.rank}</span> в рейтинге клуба` : "Ещё не в рейтинге"}</div>
       ${own ? `<button class="link-btn" data-act="rename">Изменить имя</button>` : ""}</div></div>
+    ${(() => { const r = rankOf(s.points || 0); return `<button class="rank-prog rise ${r.cls}" style="--i:1" data-act="ranks" data-p="${s.points || 0}">
+      <span class="grow"><small>${r.next ? `До звания «${esc(r.next.name)}»` : "Высшее звание клуба"}</small>
+        <span class="track"><i style="width:${r.pct}%"></i></span></span>
+      <b>${r.next ? `ещё ${fmt(r.left)}` : "♚"}</b></button>`; })()}
     <div class="stats rise" style="--i:1">
       <div class="stat"><b data-cu="${s.points}">0</b><span>очков</span></div>
       <div class="stat"><b data-cu="${s.games}">0</b><span>игр</span></div>
@@ -1197,6 +1274,7 @@ async function renderProfile() {
     <div class="section"><h3>Настройки</h3></div>
     <div class="list">
       <button class="toggle li" data-act="sound-toggle"><span class="grow"><span class="name">Звуки</span><small>Фишки, сигналы уровней, фанфары</small></span><span class="switch ${Snd.on ? "on" : ""}" id="sndSwitch"></span></button>
+      <button class="li" data-act="cheat"><span class="icon-btn" style="width:34px;height:34px">${I.book}</span><span class="grow"><span class="name">Шпаргалка</span><small>Комбинации, ауты и шансы</small></span>${I.chev}</button>
       <button class="li" data-act="chips"><span class="icon-btn" style="width:34px;height:34px">${I.stack}</span><span class="grow"><span class="name">Калькулятор фишек</span><small>Стек и ребай под ваш набор</small></span>${I.chev}</button>
       <button class="li" data-act="structure">${'<span class="icon-btn" style="width:34px;height:34px">' + I.list + "</span>"}<span class="grow"><span class="name">Структура блайндов</span><small>${S.structure.minutes} мин на уровень</small></span>${I.chev}</button>
       ${S.admin ? `
@@ -1464,6 +1542,9 @@ const ACT = {
   }),
   settings: () => { renderSettings(); push("settings"); },
   chips: () => { closeSheet(); calcState(); renderChips(); push("chips"); },
+  cheat: () => { closeSheet(); renderCheat(); push("cheat"); },
+  "cheat-tab": el => { cheatTab = el.dataset.v; haptic("select"); Snd.play("tap"); renderCheat(); },
+  ranks: el => { haptic("light"); rankSheet(+el.dataset.p || 0); },
   "calc-n": el => { const C = calcState(); C.players = Math.max(2, Math.min(40, C.players + +el.dataset.d)); store.set("calc_players", C.players); haptic("select"); Snd.play("chip"); rerenderCalc(); },
   "calc-edit": () => { const C = calcState(); C.edit = !C.edit; renderChips(); },
   "calc-add": () => { S.chips.push({ face: "", value: 0, count: 0 }); rerenderCalc(); },
