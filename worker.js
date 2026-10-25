@@ -611,40 +611,47 @@ const ACHIEVEMENTS = [
 ];
 
 async function achievements(db, uid, history) {
-  const got = new Set();
-  const wins = history.filter(h => h.place === 1).length;
-  const kos = history.reduce((a, h) => a + h.knockouts, 0);
-  if (history.length) got.add("debut");
-  if (wins >= 1) got.add("first_win");
-  if (wins >= 3) got.add("hat_trick");
-  if (wins >= 10) got.add("dynasty");
-  if (history.length >= 10) got.add("regular");
-  if (history.length >= 25) got.add("legend");
-  if (kos >= 20) got.add("collector");
-  let streak = 0;
+  // для каждой награды запоминаем турнир, в котором она получена, и прогресс к ней
+  const when = {};
+  const mark = (key, h) => { if (!when[key]) when[key] = h ? { tid: h.id, title: h.title, date: h.starts_at } : { tid: null, title: "", date: null }; };
+  let wins = 0, kos = 0, games = 0, fourth = 0, streak = 0, bestStreak = 0;
   for (const h of history) {
-    streak = h.place <= 3 ? streak + 1 : 0;
-    if (streak >= 3) got.add("steady");
-    if (h.knockouts >= 3) got.add("hunter");
-    if (h.place === 1 && h.rebuys >= 2) got.add("comeback");
-    if (h.place === 1 && h.rebuys === 0 && h.n >= 3) got.add("iron");
+    games++; kos += h.knockouts || 0;
+    if (games === 1) mark("debut", h);
+    if (games === 10) mark("regular", h);
+    if (games === 25) mark("legend", h);
+    if (h.place === 1) { wins++; if (wins === 1) mark("first_win", h); if (wins === 3) mark("hat_trick", h); if (wins === 10) mark("dynasty", h); }
+    if (kos >= 20) mark("collector", h);
+    streak = h.place <= 3 ? streak + 1 : 0; bestStreak = Math.max(bestStreak, streak);
+    if (streak >= 3) mark("steady", h);
+    if ((h.knockouts || 0) >= 3) mark("hunter", h);
+    if (h.place === 1 && h.rebuys >= 2) mark("comeback", h);
+    if (h.place === 1 && h.rebuys === 0 && h.n >= 3) mark("iron", h);
+    if (h.bet_status === "won" && (h.bet_coef || 0) >= 3) mark("bookie", h);
+    if (h.bet_status === "won" && h.bet_stake && h.bet_stake >= (h.base_points || 0)) mark("allin", h);
+    if (h.place === 4) { fourth++; if (fourth === 3) mark("bubble", h); }
   }
-  for (const h of history) {
-    if (h.bet_status === "won" && (h.bet_coef || 0) >= 3) got.add("bookie");
-    if (h.bet_status === "won" && h.bet_stake && h.bet_stake >= (h.base_points || 0)) got.add("allin");
-  }
-  if (history.filter(h => h.place === 4).length >= 3) got.add("bubble");
-  const hits = (await db.q("SELECT COUNT(*) AS n FROM predictions WHERE tg_id=? AND correct=1", [uid], true)).n;
-  if (hits >= 3) got.add("oracle");
+  const preds = await db.q(`SELECT t.id, t.title, t.starts_at FROM predictions pr JOIN tournaments t ON t.id = pr.tournament_id
+     WHERE pr.tg_id=? AND pr.correct=1 ORDER BY t.starts_at, t.id`, [uid]);
+  if (preds.length >= 3) mark("oracle", preds[2]);
   const thisMonth = new Date().toISOString().slice(0, 7);
-  const months = new Set(history.filter(h => h.starts_at).map(h => h.starts_at.slice(0, 7)));
+  const months = [...new Set(history.filter(h => h.starts_at).map(h => h.starts_at.slice(0, 7)))].sort();
+  let champs = 0;
   for (const m of months) {
     if (m && m < thisMonth) {
       const top = await ratingRows(db, m);
-      if (top.length && top[0].tg_id === uid) { got.add("champion"); break; }
+      if (top.length && top[0].tg_id === uid) { champs++; if (!when.champion) when.champion = { tid: null, title: "Лучший в рейтинге за " + m, date: m + "-01", month: m }; }
     }
   }
-  return ACHIEVEMENTS.map(([key, icon, title, desc]) => ({ key, icon, title, desc, got: got.has(key) }));
+  const prog = {
+    debut: [games, 1], first_win: [wins, 1], hat_trick: [wins, 3], dynasty: [wins, 10], steady: [bestStreak, 3],
+    regular: [games, 10], legend: [games, 25], collector: [kos, 20], bubble: [fourth, 3], oracle: [preds.length, 3],
+  };
+  return ACHIEVEMENTS.map(([key, icon, title, desc]) => {
+    const p = prog[key];
+    return { key, icon, title, desc, got: !!when[key], when: when[key] || null,
+      progress: p ? [Math.min(p[0], p[1]), p[1]] : null, ...(key === "champion" && champs > 1 ? { times: champs } : {}) };
+  });
 }
 
 async function profile(db, ctx, pid) {

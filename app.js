@@ -1085,7 +1085,72 @@ document.addEventListener("input", e => {
 });
 
 /* ═════════════════ Профиль ═════════════════ */
-const achHTML = a => `<div class="ach ${a.got ? "" : "locked"}" title="${esc(a.desc)}"><div class="medal ${a.got ? "shine" : "locked"}">${a.icon}</div><span>${esc(a.title)}</span></div>`;
+const achHTML = a => `<button type="button" class="ach ${a.got ? "" : "locked"}" data-ach="${esc(JSON.stringify(a))}" aria-label="${esc(a.title + ": " + a.desc)}"><div class="medal ${a.got ? "shine" : "locked"}">${a.icon}${a.times ? `<i class="ach-x">×${a.times}</i>` : ""}</div><span>${esc(a.title)}</span></button>`;
+
+/* Подсказка к награде: наведение на ПК, нажатие на телефоне и ПК */
+const AchTip = (() => {
+  let tip = null, anchor = null, pinned = false, hideT = 0;
+  const fine = matchMedia("(hover:hover) and (pointer:fine)").matches;
+  function build(a) {
+    const w = a.when;
+    const pct = a.progress ? Math.round(a.progress[0] / a.progress[1] * 100) : 0;
+    const whenTxt = w ? (w.month ? `${monthShort(w.month)} ${w.month.slice(0, 4)}` : w.date ? fmtDate(w.date, false) : "") : "";
+    return `<div class="at-head"><div class="medal ${a.got ? "shine" : "locked"}">${a.icon}</div>
+        <div class="grow"><small>${a.got ? "Награда получена" : "Награда не получена"}</small><b>${esc(a.title)}</b></div></div>
+      <div class="at-row"><span class="at-k">За что</span><span>${esc(a.desc)}</span></div>
+      ${a.got && w ? `<div class="at-row"><span class="at-k">Когда</span><span>${esc(whenTxt)}${w.title ? ` · ${esc(w.title)}` : ""}${a.times ? ` · ${a.times} раза` : ""}</span></div>
+        ${w.tid ? `<button class="at-link" data-act="open-t" data-id="${w.tid}">Открыть турнир ${I.chev}</button>` : ""}` : ""}
+      ${!a.got && a.progress ? `<div class="at-prog"><span class="track"><i style="width:${pct}%"></i></span><b>${a.progress[0]} / ${a.progress[1]}</b></div>` : ""}`;
+  }
+  function place() {
+    if (!tip || !anchor) return;
+    const r = anchor.getBoundingClientRect(), tw = tip.offsetWidth, th = tip.offsetHeight, m = 10;
+    let left = r.left + r.width / 2 - tw / 2;
+    left = Math.max(m, Math.min(left, innerWidth - tw - m));
+    let top = r.top - th - 10, below = false;
+    if (top < m + (window.Telegram?.WebApp?.safeAreaInset?.top || 0)) { top = r.bottom + 10; below = true; }
+    tip.style.left = left + "px"; tip.style.top = top + "px";
+    tip.style.setProperty("--ax", (r.left + r.width / 2 - left) + "px");
+    tip.classList.toggle("below", below);
+  }
+  function show(el, pin) {
+    clearTimeout(hideT);
+    if (anchor === el && tip) { pinned = pinned || pin; return; }
+    hide(true);
+    let a; try { a = JSON.parse(el.dataset.ach); } catch { return; }
+    anchor = el; pinned = pin; el.classList.add("on");
+    tip = document.createElement("div"); tip.className = "ach-tip"; tip.innerHTML = build(a);
+    document.body.appendChild(tip); place();
+    requestAnimationFrame(() => tip && tip.classList.add("on"));
+    if (pin) haptic("light");
+    tip.addEventListener("mouseenter", () => clearTimeout(hideT));
+    tip.addEventListener("mouseleave", () => { if (!pinned) soon(); });
+  }
+  function hide(now) {
+    clearTimeout(hideT);
+    if (anchor) anchor.classList.remove("on");
+    const t = tip; tip = null; anchor = null; pinned = false;
+    if (t) { if (now) t.remove(); else { t.classList.remove("on"); setTimeout(() => t.remove(), 220); } }
+  }
+  const soon = () => { clearTimeout(hideT); hideT = setTimeout(() => hide(), 140); };
+  document.addEventListener("click", e => {
+    const el = e.target.closest(".ach[data-ach]");
+    if (el) { e.stopPropagation(); (anchor === el && pinned) ? hide() : show(el, true); return; }
+    if (tip && !e.target.closest(".ach-tip")) hide();
+    else if (tip && e.target.closest(".at-link")) setTimeout(() => hide(true), 0);
+  }, true);
+  if (fine) {
+    document.addEventListener("mouseover", e => { const el = e.target.closest?.(".ach[data-ach]"); if (el && !pinned) show(el, false); });
+    document.addEventListener("mouseout", e => {
+      const el = e.target.closest?.(".ach[data-ach]");
+      if (el && el === anchor && !pinned && !(e.relatedTarget && el.contains(e.relatedTarget))) soon();
+    });
+  }
+  document.addEventListener("keydown", e => { if (e.key === "Escape") hide(); });
+  addEventListener("scroll", () => tip && hide(), { passive: true, capture: true });
+  addEventListener("resize", () => tip && hide());
+  return { hide };
+})();
 function profileHTML(d, own) {
   const s = d.stats || { games: 0, wins: 0, top3: 0, best: null, points: 0, knockouts: 0, form: 0 };
   const maxM = Math.max(1, ...d.monthly.map(m => m.points));

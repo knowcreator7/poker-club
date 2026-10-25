@@ -314,6 +314,37 @@ button.li:active{background:var(--surface2)}
 .medal.locked::before{border-color:var(--stroke)}
 .ach span{font-size:11px;font-weight:600;line-height:1.2}
 .ach.locked span{color:var(--dim)}
+.ach{padding:4px 0;border-radius:16px;-webkit-tap-highlight-color:transparent;transition:transform .25s var(--spring)}
+.ach .medal{transition:transform .3s var(--spring),box-shadow .3s}
+.ach:active .medal{transform:scale(.92)}
+.ach.on .medal{transform:translateY(-3px) scale(1.06);box-shadow:0 0 0 2px rgba(216,180,106,.55),0 14px 30px -10px rgba(216,180,106,.9),inset 0 2px 0 rgba(255,255,255,.55)}
+.ach.locked.on .medal{box-shadow:0 0 0 2px var(--stroke2)}
+.ach:focus-visible{outline:2px solid var(--gold);outline-offset:3px}
+@media (hover:hover) and (pointer:fine){.ach:hover .medal{transform:translateY(-3px) scale(1.06)}}
+.ach-x{position:absolute;right:-2px;bottom:-2px;font-style:normal;font-size:10px;font-weight:800;padding:2px 5px;border-radius:9px;background:#0d1d16;color:var(--gold-hi);border:1px solid rgba(216,180,106,.5)}
+.medal .ach-x{z-index:2}
+.ach-tip{position:fixed;z-index:120;width:min(300px,calc(100vw - 20px));padding:14px 14px 12px;border-radius:20px;
+  background:linear-gradient(160deg,rgba(31,58,44,.98),rgba(12,26,19,.98));border:1px solid rgba(216,180,106,.38);
+  box-shadow:0 24px 50px -14px rgba(0,0,0,.85),inset 0 1px 0 rgba(255,255,255,.06);
+  opacity:0;transform:translateY(6px) scale(.96);transform-origin:var(--ax,50%) 100%;transition:opacity .2s,transform .3s var(--spring);pointer-events:auto}
+.ach-tip.below{transform-origin:var(--ax,50%) 0;transform:translateY(-6px) scale(.96)}
+.ach-tip.on{opacity:1;transform:none}
+.ach-tip::after{content:"";position:absolute;left:var(--ax,50%);bottom:-7px;width:12px;height:12px;margin-left:-6px;transform:rotate(45deg);
+  background:rgba(12,26,19,.98);border-right:1px solid rgba(216,180,106,.38);border-bottom:1px solid rgba(216,180,106,.38)}
+.ach-tip.below::after{bottom:auto;top:-7px;transform:rotate(225deg);background:rgba(31,58,44,.98)}
+.at-head{display:flex;align-items:center;gap:12px;margin-bottom:10px}
+.at-head .medal{width:46px;height:46px;font-size:20px;flex:none}
+.at-head small{display:block;font-size:10px;letter-spacing:.18em;text-transform:uppercase;color:var(--gold)}
+.ach-tip .medal.locked + .grow small{color:var(--muted)}
+.at-head b{display:block;font-family:var(--display);font-size:23px;font-weight:600;line-height:1.05}
+.at-row{display:flex;gap:10px;padding:8px 0;border-top:1px solid var(--stroke);font-size:13.5px;line-height:1.35}
+.at-k{flex:none;width:58px;color:var(--muted);font-size:12px;padding-top:1px}
+.at-link{display:flex;align-items:center;justify-content:center;gap:4px;width:100%;margin-top:8px;padding:9px;border-radius:12px;font-size:13px;font-weight:600;color:var(--gold-hi);background:rgba(216,180,106,.1);border:1px solid rgba(216,180,106,.25)}
+
+.at-prog{display:flex;align-items:center;gap:10px;padding-top:10px;border-top:1px solid var(--stroke);font-size:13px}
+.at-prog .track{flex:1;height:6px;border-radius:9px;background:rgba(255,255,255,.07);overflow:hidden}
+.at-prog .track i{display:block;height:100%;border-radius:9px;background:var(--gold-grad);transform-origin:left;animation:barX .7s var(--ease) both}
+.at-prog b{font-variant-numeric:tabular-nums;color:var(--gold-hi);font-size:12.5px}
 .duel{display:flex;align-items:center;gap:10px}
 .duel .track{flex:1;height:6px;border-radius:9px;background:rgba(207,74,83,.35);overflow:hidden}
 .duel .track i{display:block;height:100%;background:var(--gold-grad);border-radius:9px;transform-origin:left;animation:barX .9s var(--ease) both}
@@ -437,3 +468,4 @@ body.has-sub #toast{bottom:calc(28px + var(--safe-b))}
 .bar-mini i{display:block;height:100%;background:var(--gold-grad);border-radius:9px}
 .chips-row{display:flex;flex-wrap:wrap;align-items:center;gap:8px 10px}
 .chips-row b{font-weight:400;font-size:18px;margin-right:6px}
+.at-link .chev{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:2.2;flex:none}
