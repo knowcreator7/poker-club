@@ -499,6 +499,10 @@ const DTAB = {
         <span class="rank">${e.place}</span>${av(e, "sm")}
         <span class="grow"><span class="name">${esc(e.name)}</span>
           <small>${[e.base_points != null && e.base_points !== e.points ? `за место ${fmt(e.base_points)}` : "", e.knockouts ? `нокаутов ${e.knockouts}` : "", e.rebuys ? `ребаев ${e.rebuys}` : ""].filter(Boolean).join(" · ") || "—"}</small>
+          ${e.spin_pct ? `<small class="pos">🎰 пачинко +${e.spin_pct}% = +${fmt(e.spin_points)}</small>` : ""}
+          ${e.bounty_in ? `<small class="pos">💰 награда за голову +${fmt(e.bounty_in)}</small>` : ""}
+          ${e.bounty_out ? `<small class="neg">💰 отдал за голову −${fmt(e.bounty_out)}</small>` : ""}
+          ${e.cap_cut ? `<small class="muted">⚖️ потолок −${fmt(e.cap_cut)}: выше вылетевшего позже не подняться</small>` : ""}
           ${["won", "lost"].includes(e.bet_status) ? (() => { const pk = t.entries.find(x => x.tg_id === e.bet_pick);
             return `<small class="${e.bet_status === "won" ? "pos" : "neg"}">${e.bet_status === "won" ? "✓" : "✗"} ставка → ${esc(pk ? pk.name : "?")}: ${fmt(e.bet_stake)} × ${e.bet_coef} ${e.bet_status === "won" ? `= +${fmt(e.bet_payout - e.bet_stake)}` : `= −${fmt(e.bet_stake)}`}</small>`; })() : ""}</span>
         <span class="val gold-text">${e.points}</span></button>`).join("")}</div>
@@ -669,7 +673,7 @@ function renderLive() {
     ${t ? `
       <div class="section"><h3>В игре</h3>${S.admin ? `<span class="muted" style="font-size:12.5px">нажми на игрока</span>` : ""}</div>
       <div class="pgrid">${alive.map(e => `<button class="pchip" data-act="pmenu" data-tg="${e.tg_id}" id="pc-${e.tg_id}">
-          ${e.knockouts ? `<span class="ko">✦${e.knockouts}</span>` : ""}${av(e)}
+          ${e.knockouts ? `<span class="ko">✦${e.knockouts}</span>` : ""}${(() => { const h = headPrice(t, e.tg_id); return h ? `<span class="head-tag">💰${fmt(h)}</span>` : ""; })()}${av(e)}
           <span class="pn">${esc(e.name)}</span>
           <span class="pm">${e.seat_no ? (tables > 1 ? `С${e.table_no} · ` : "") + "место " + e.seat_no : e.rebuys ? `ребаев ${e.rebuys}` : "&nbsp;"}</span></button>`).join("")}</div>
       ${out.length ? `<div class="section"><h3>Выбыли</h3>${S.admin ? `<button class="link" data-act="unbust">${"Отменить последний"}</button>` : ""}</div>
@@ -681,7 +685,12 @@ function renderLive() {
             : e.bet_status === "declined" ? `<span class="muted" style="font-size:12px">без ставки</span>` : "";
           const cancel = S.admin && ["placed", "declined"].includes(e.bet_status) && t.bet_coef_now ? `<button class="x-btn" data-act="bet-cancel" data-tg="${e.tg_id}" aria-label="Отменить решение">↺</button>` : "";
           const ret = S.admin ? `<button class="x-btn" data-act="unbust-one" data-tg="${e.tg_id}" aria-label="Вернуть в игру" title="Вернуть в игру">⤺</button>` : "";
-          return `<div class="li"><span class="rank">${e.place}</span>${av(e, "sm")}<span class="grow"><span class="name">${esc(e.name)}</span><small>${by ? "выбил " + esc(by.name) : "выбыл"}${e.base_points ? ` · ${fmt(e.base_points)} очк.` : ""}</small></span>${bet}${cancel}${ret}</div>`;
+          const myB = (t.bounties || []).find(b => b.from_id === e.tg_id && b.status === "open");
+          const bTarget = myB && t.entries.find(x => x.tg_id === myB.target_id);
+          const bTag = myB ? `<span class="bet-tag head">💰 ${esc(bTarget ? bTarget.name : "?")} · ${fmt(myB.amount)}</span>`
+            : (S.admin && t.bet_coef_now && e.base_points ? `<button class="x-btn" data-act="bounty-open" data-tg="${e.tg_id}" aria-label="Награда за голову" title="Награда за голову">💰</button>` : "");
+          const sp = (t.spins || []).filter(x => x.tg_id === e.tg_id).reduce((a, x) => a + x.pct, 0);
+          return `<div class="li"><span class="rank">${e.place}</span>${av(e, "sm")}<span class="grow"><span class="name">${esc(e.name)}</span><small>${by ? "выбил " + esc(by.name) : "выбыл"}${e.base_points ? ` · ${fmt(e.base_points)} очк.` : ""}${sp ? ` · 🎰 +${sp}%` : ""}</small></span>${bet}${bTag}${cancel}${ret}</div>`;
         }).join("")}</div>` : ""}` : `
       <button class="btn btn-ghost" style="margin-top:22px" data-act="structure">${I.list}Структура блайндов</button>`}`;
   L.lastIdx = null;
@@ -767,7 +776,8 @@ function applyLive(t, fromAction = false) {
   const prevOut = new Set(prev.entries.filter(e => e.place != null).map(e => e.tg_id));
   const newly = t.entries.filter(e => e.place != null && !prevOut.has(e.tg_id) && e.place !== 1);
   const structural = newly.length || prev.entries.length !== t.entries.length || prev.status !== t.status ||
-    JSON.stringify(prev.entries.map(e => [e.knockouts, e.rebuys, e.seat_no, e.place, e.bet_status])) !== JSON.stringify(t.entries.map(e => [e.knockouts, e.rebuys, e.seat_no, e.place, e.bet_status]));
+    JSON.stringify(prev.entries.map(e => [e.knockouts, e.rebuys, e.seat_no, e.place, e.bet_status])) !== JSON.stringify(t.entries.map(e => [e.knockouts, e.rebuys, e.seat_no, e.place, e.bet_status]))
+    || JSON.stringify(prev.bounties || []) !== JSON.stringify(t.bounties || []) || (prev.spins || []).length !== (t.spins || []).length;
   const finishedNow = prev.status !== "finished" && t.status === "finished";
   const doRender = () => {
     const keepIdx = L.lastIdx, keepW = L.warned, keepT = L.ticked;
@@ -805,8 +815,12 @@ function betSheet(tg_id) {
   const e = t.entries.find(x => x.tg_id === tg_id);
   const alive = t.entries.filter(x => x.place == null);
   if (!e || e.bet_status !== "pending" || !t.bet_coef_now || alive.length < 2) return;
-  const max = e.base_points || 0;
-  S.bet = { tg: tg_id, pick: null, stake: Math.max(1, Math.round(max / 2)), max, coef: t.bet_coef_now };
+  const base = e.base_points || 0;
+  const myB = (t.bounties || []).find(b => b.from_id === tg_id && b.status === "open");
+  const max = Math.max(0, base - (myB ? myB.amount : 0));
+  if (!max) return toast("Все очки ушли на награду за голову");
+  const cap = e.cap_est || Infinity;
+  S.bet = { tg: tg_id, pick: null, stake: Math.max(1, Math.round(max / 2)), max, base, coef: t.bet_coef_now, cap };
   openSheet(`<div style="display:flex;align-items:center;gap:14px;margin-bottom:16px">${av(e, "lg ring")}
       <div><div class="eyebrow">Выбыл на ${e.place} месте</div><h3 style="margin:4px 0 0">${esc(e.name)}</h3></div></div>
     <div class="bet-head">
@@ -820,8 +834,10 @@ function betSheet(tg_id) {
     <div class="quick">${[25, 50, 75, 100].map(p => `<button data-act="bet-quick" data-p="${p}">${p === 100 ? "Всё" : p + "%"}</button>`).join("")}</div>
     <div class="bet-sum"><div><span>Если угадает</span><b class="pos" id="betWin">—</b></div><div><span>Если нет</span><b class="neg" id="betLose">—</b></div></div>
     <button class="btn btn-gold" id="betGo" data-act="bet-place" disabled>Выберите победителя</button>
-    <button class="btn btn-ghost" style="margin-top:10px" data-act="bet-decline">Отказаться — ${fmt(max)} очков останутся</button>
-    <p class="dim" style="font-size:12px;margin-top:12px;line-height:1.5">Кэф = ${S.scoring.margin} × игроков в игре (${alive.length}). Чем позже вылет, тем меньше кэф — так поздняя ставка не выгоднее ранней.</p>`);
+    <button class="btn btn-ghost" style="margin-top:10px" data-act="bet-decline">Отказаться — ${fmt(base)} очков останутся</button>
+    <button class="btn btn-ghost" style="margin-top:10px" data-act="bounty-open" data-tg="${tg_id}">💰 Объявить награду за голову</button>
+    <p class="dim" style="font-size:12px;margin-top:12px;line-height:1.5">Кэф = ${S.scoring.margin} × игроков в игре (${alive.length}).
+      ${cap !== Infinity ? `<b style="color:var(--ivory)">Потолок — ${fmt(cap)} очк.</b>: выигрыш не поднимет выше того, кто вылетит позже.` : ""}</p>`);
   updBet();
 }
 function updBet() {
@@ -829,8 +845,9 @@ function updBet() {
   B.stake = Math.max(1, Math.min(B.max, Math.round(+$("betStake").value || 1)));
   $("betStakeV").textContent = fmt(B.stake);
   const win = Math.round(B.stake * B.coef);
-  $("betWin").textContent = `${fmt(B.max - B.stake + win)} очк.`;
-  $("betLose").textContent = `${fmt(B.max - B.stake)} очк.`;
+  const raw = B.base - B.stake + win, capped = Math.min(raw, Math.max(B.base - B.stake, B.cap));
+  $("betWin").innerHTML = `${fmt(capped)} очк.${capped < raw ? `<small class="muted" style="display:block;font-size:11px">потолок</small>` : ""}`;
+  $("betLose").textContent = `${fmt(B.base - B.stake)} очк.`;
   document.querySelectorAll(".bet-pick").forEach(b => b.classList.toggle("on", +b.dataset.tg === B.pick));
   const go = $("betGo"); go.disabled = !B.pick;
   const pickName = B.pick && (S.live.t.entries.find(x => x.tg_id === B.pick) || {}).name;
@@ -839,6 +856,130 @@ function updBet() {
   $("betStake").style.setProperty("--p", pct + "%");
 }
 document.addEventListener("input", e => { if (e.target.id === "betStake") { updBet(); haptic("select"); } });
+
+/* ═════════════════ Награда за голову ═════════════════ */
+function headPrice(t, id) { return (t.bounties || []).filter(b => b.target_id === id && b.status === "open").reduce((a, b) => a + b.amount, 0); }
+function bountySheet(tg_id) {
+  const t = S.live && S.live.t; if (!t) return;
+  const e = t.entries.find(x => x.tg_id === tg_id), alive = t.entries.filter(x => x.place == null);
+  if (!e || !e.base_points || alive.length < 2) return;
+  const cur = (t.bounties || []).find(b => b.from_id === tg_id && b.status === "open");
+  const betBusy = e.bet_status === "placed" ? e.bet_stake : 0;
+  const max = Math.max(0, e.base_points - betBusy);
+  if (!max) return toast("Все очки уже в ставке");
+  S.bty = { tg: tg_id, target: cur ? cur.target_id : null, amount: cur ? Math.min(cur.amount, max) : Math.max(1, Math.round(max / 3)), max };
+  openSheet(`<div style="display:flex;align-items:center;gap:14px;margin-bottom:14px">${av(e, "lg ring")}
+      <div><div class="eyebrow">Награда за голову</div><h3 style="margin:4px 0 0">${esc(e.name)}</h3></div></div>
+    <p class="muted" style="font-size:13.5px;margin-bottom:12px">За кого ${esc(e.name)} назначает награду? Кто его выбьет — заберёт эти очки. Если он выиграет турнир, очки вернутся.</p>
+    <div class="list">${alive.map(a => `<button class="li bet-pick bty-pick" data-act="bty-pick" data-tg="${a.tg_id}">${av(a, "sm")}
+      <span class="grow"><span class="name">${esc(a.name)}</span><small>${headPrice(t, a.tg_id) ? `уже назначено 💰${fmt(headPrice(t, a.tg_id))}` : "в игре"}</small></span><span class="radio"></span></button>`).join("")}</div>
+    <div class="eyebrow" style="margin:20px 0 10px">Сколько очков${betBusy ? ` (в ставке ${fmt(betBusy)})` : ""}</div>
+    <div class="stake"><input id="btyAmt" type="range" min="1" max="${max}" step="1" value="${S.bty.amount}" aria-label="Награда"><b id="btyAmtV" class="num">0</b></div>
+    <div class="quick">${[25, 50, 75, 100].map(p => `<button data-act="bty-quick" data-p="${p}">${p === 100 ? "Всё" : p + "%"}</button>`).join("")}</div>
+    <button class="btn btn-gold" style="margin-top:16px" id="btyGo" data-act="bty-place" disabled>Выберите игрока</button>
+    ${cur ? `<button class="btn btn-ghost" style="margin-top:10px" data-act="bty-cancel">Снять награду</button>` : ""}
+    <p class="dim" style="font-size:12px;margin-top:12px;line-height:1.5">Награда — это тоже бонус: тот, кто её заберёт, не поднимется выше вылетевших позже него.</p>`);
+  updBty();
+}
+function updBty() {
+  const B = S.bty; if (!B || !$("btyAmt")) return;
+  B.amount = Math.max(1, Math.min(B.max, Math.round(+$("btyAmt").value || 1)));
+  $("btyAmtV").textContent = fmt(B.amount);
+  $("btyAmt").style.setProperty("--p", (B.amount - 1) / Math.max(1, B.max - 1) * 100 + "%");
+  document.querySelectorAll(".bty-pick").forEach(b => b.classList.toggle("on", +b.dataset.tg === B.target));
+  const go = $("btyGo"); go.disabled = !B.target;
+  const nm = B.target && (S.live.t.entries.find(x => x.tg_id === B.target) || {}).name;
+  go.textContent = B.target ? `💰 ${fmt(B.amount)} за голову ${nm}` : "Выберите игрока";
+}
+document.addEventListener("input", e => { if (e.target.id === "btyAmt") { updBty(); haptic("select"); } });
+
+/* ═════════════════ Пачинко ═════════════════
+   Результат выбирает сервер. Здесь — только красивая анимация падения шарика в уже выпавшую лунку. */
+function pachinko(spin) {
+  return new Promise(resolve => {
+    const ov = document.createElement("div");
+    ov.className = "pach";
+    ov.innerHTML = `<div class="pach-card">
+      <div class="eyebrow">Нокаут · пачинко</div>
+      <h3 class="display" style="font-size:30px;margin:6px 0 2px">${esc(spin.name || "Игрок")}</h3>
+      <p class="muted" style="font-size:13px">выбил ${esc(spin.victim || "соперника")}${spin.bounty ? ` · забирает 💰${fmt(spin.bounty)}` : ""}</p>
+      <canvas id="pachCv" aria-label="Пачинко"></canvas>
+      <div class="pach-res" id="pachRes">&nbsp;</div>
+      <button class="btn btn-gold" id="pachGo">Запустить шарик</button></div>`;
+    document.body.appendChild(ov);
+    requestAnimationFrame(() => ov.classList.add("on"));
+    const cv = $("pachCv"), dpr = Math.min(2, devicePixelRatio || 1);
+    const W = Math.min(360, innerWidth - 64), H = Math.round(W * 1.15);
+    cv.width = W * dpr; cv.height = H * dpr; cv.style.width = W + "px"; cv.style.height = H + "px";
+    const x = cv.getContext("2d"); x.scale(dpr, dpr);
+    const N = 10, ROWS = 9, slotW = W / N, top = 28, slotH = 58, rowH = (H - top - slotH - 18) / ROWS;
+    // шахматка штырьков: в ряду r — (r+2) штырька по центру
+    const pegs = [];
+    for (let r = 0; r < ROWS; r++) {
+      const cnt = r + 2, x0 = W / 2 - ((cnt - 1) * (W - slotW) / ROWS) / 2;
+      for (let i = 0; i < cnt; i++) pegs.push({ x: x0 + i * (W - slotW) / ROWS, y: top + r * rowH + rowH * 0.6, r });
+    }
+    const colors = v => v >= 50 ? "#f7e9bd" : v >= 25 ? "#d8b46a" : v >= 10 ? "#b8323b" : v >= 5 ? "#2f5d9e" : "#2a6b4f";
+    let lit = -1, ball = null;
+    function draw() {
+      x.clearRect(0, 0, W, H);
+      for (const p of pegs) { x.fillStyle = "rgba(239,232,218,.55)"; x.beginPath(); x.arc(p.x, p.y, 3.2, 0, 7); x.fill(); }
+      spin.slots.forEach((v, i) => {
+        const sx = i * slotW, sy = H - slotH - 6;
+        x.fillStyle = i === lit ? colors(v) : "rgba(255,255,255,.05)";
+        x.strokeStyle = colors(v); x.lineWidth = 1.5;
+        x.beginPath(); x.roundRect(sx + 2, sy, slotW - 4, slotH, 8); x.fill(); x.stroke();
+        x.fillStyle = i === lit ? "#1d1406" : colors(v);
+        x.font = `700 ${v >= 10 ? 13 : 14}px Manrope, sans-serif`; x.textAlign = "center"; x.textBaseline = "middle";
+        x.fillText(v + "%", sx + slotW / 2, sy + slotH * 0.7);
+      });
+      if (ball) {
+        const g = x.createRadialGradient(ball.x - 3, ball.y - 3, 1, ball.x, ball.y, 9);
+        g.addColorStop(0, "#fff"); g.addColorStop(.5, "#e9d7a2"); g.addColorStop(1, "#9b7333");
+        x.fillStyle = g; x.beginPath(); x.arc(ball.x, ball.y, 8, 0, 7); x.fill();
+      }
+    }
+    draw();
+    // путь: ровно spin.slot шагов вправо из ROWS — по формуле доски Гальтона
+    function path() {
+      const steps = []; let right = spin.slot; const dirs = [];
+      for (let r = 0; r < ROWS; r++) dirs.push(r < right ? 1 : 0);
+      for (let i = dirs.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [dirs[i], dirs[j]] = [dirs[j], dirs[i]]; }
+      let pos = W / 2, xs = [{ x: W / 2 + (Math.random() - .5) * 6, y: 4 }];
+      const stepX = (W - slotW) / ROWS / 2;
+      dirs.forEach((d, r) => { pos += d ? stepX : -stepX; xs.push({ x: pos, y: top + r * rowH + rowH * 0.6 - 9 }); });
+      xs.push({ x: slotW * (spin.slot + 0.5), y: H - slotH - 6 + 16 });
+      return xs;
+    }
+    function finish() {
+      lit = spin.slot; draw();
+      $("pachRes").innerHTML = `<b class="gold-text">+${spin.pct}%</b><small>к очкам за место в конце турнира</small>`;
+      Snd.play(spin.pct >= 25 ? "win" : "level"); haptic("success");
+      if (spin.pct >= 25) chipRain(spin.pct >= 50 ? 110 : 60, 3200);
+      const go = $("pachGo"); go.textContent = "Дальше"; go.disabled = false;
+      go.onclick = () => { ov.classList.remove("on"); setTimeout(() => { ov.remove(); resolve(); }, 300); };
+    }
+    $("pachGo").onclick = () => {
+      const go = $("pachGo"); go.disabled = true; go.textContent = "…";
+      Snd.init(); Snd.play("chip");
+      if (reduced) { ball = path().pop(); return finish(); }
+      const pts = path(); let k = 0, t0 = performance.now();
+      const seg = 230;
+      (function frame(now) {
+        const f = Math.min(1, (now - t0) / seg), a = pts[k], b = pts[k + 1];
+        const e = f * f; // ускорение вниз
+        ball = { x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * e - Math.sin(f * Math.PI) * 6 };
+        draw();
+        if (f >= 1) {
+          k++; t0 = now;
+          if (k < pts.length - 1) { Snd.play("tick"); haptic("select"); }
+          if (k >= pts.length - 1) return finish();
+        }
+        requestAnimationFrame(frame);
+      })(t0);
+    };
+  });
+}
 
 /* ═════════════════ Рейтинг ═════════════════ */
 async function renderRating() {
@@ -1472,10 +1613,30 @@ const ACT = {
     try { t = await api(`/tournaments/${S.live.t.id}/bust`, { tg_id, by: +el.dataset.by }); }
     catch (err) { S.live.t = await api("/tournaments/" + S.live.t.id); renderLive(); throw err; }
     applyLive(t, true);
+    if (t.spin) { await new Promise(r => setTimeout(r, reduced ? 50 : 700)); await pachinko(t.spin); }
     const e = t.entries.find(x => x.tg_id === tg_id);
-    if (t.status === "running" && e && e.bet_status === "pending") setTimeout(() => betSheet(tg_id), reduced ? 50 : 900);
+    if (t.status === "running" && e && e.bet_status === "pending") setTimeout(() => betSheet(tg_id), reduced ? 50 : 400);
   }),
   "bet-open": el => betSheet(+el.dataset.tg),
+  "bounty-open": el => { closeSheet(); setTimeout(() => bountySheet(+el.dataset.tg), 200); },
+  "bty-pick": el => { S.bty.target = +el.dataset.tg; Snd.play("chip"); haptic("select"); updBty(); },
+  "bty-quick": el => { $("btyAmt").value = Math.max(1, Math.round(S.bty.max * +el.dataset.p / 100)); Snd.play("tap"); updBty(); },
+  "bty-place": el => safe(async () => {
+    const B = S.bty; el.disabled = true;
+    try {
+      const t = await api(`/tournaments/${S.live.t.id}/bounty`, { tg_id: B.tg, target: B.target, amount: B.amount });
+      closeSheet(); chipBurst(el); Snd.play("chips"); haptic("success");
+      const on = t.entries.find(x => x.tg_id === B.target);
+      toast(`💰 Награда ${fmt(B.amount)} за голову ${on ? on.name : ""}`);
+      S.live.t = t; renderLive();
+      const me = t.entries.find(x => x.tg_id === B.tg);
+      if (me && me.bet_status === "pending") setTimeout(() => betSheet(B.tg), 350);
+    } finally { el.disabled = false; }
+  }),
+  "bty-cancel": () => safe(async () => {
+    const t = await api(`/tournaments/${S.live.t.id}/bounty_cancel`, { tg_id: S.bty.tg });
+    closeSheet(); Snd.play("tap"); toast("Награда снята"); S.live.t = t; renderLive();
+  }),
   "bet-pick": el => { S.bet.pick = +el.dataset.tg; Snd.play("chip"); haptic("select"); updBet(); },
   "bet-quick": el => { $("betStake").value = Math.max(1, Math.round(S.bet.max * +el.dataset.p / 100)); Snd.play("tap"); updBet(); },
   "bet-place": el => safe(async () => {
