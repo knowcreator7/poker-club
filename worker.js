@@ -22,7 +22,14 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS rsvp(tournament_id INTEGER, tg_id INTEGER, answer TEXT, PRIMARY KEY (tournament_id, tg_id))`,
   `CREATE TABLE IF NOT EXISTS predictions(tournament_id INTEGER, tg_id INTEGER, pick_id INTEGER, correct INTEGER, PRIMARY KEY (tournament_id, tg_id))`,
   `CREATE TABLE IF NOT EXISTS photos(id INTEGER PRIMARY KEY AUTOINCREMENT, tournament_id INTEGER, tg_id INTEGER, file TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP)`,
+  `CREATE TABLE IF NOT EXISTS bounties(id INTEGER PRIMARY KEY AUTOINCREMENT, tournament_id INTEGER, from_id INTEGER, target_id INTEGER, amount INTEGER, status TEXT DEFAULT 'open', paid_to INTEGER, created_at TEXT DEFAULT CURRENT_TIMESTAMP)`,
+  `CREATE TABLE IF NOT EXISTS spins(id INTEGER PRIMARY KEY AUTOINCREMENT, tournament_id INTEGER, tg_id INTEGER, victim_id INTEGER, pct INTEGER, slots TEXT, slot INTEGER, created_at TEXT DEFAULT CURRENT_TIMESTAMP)`,
 ];
+// новые колонки в entries (добавляются один раз, при первом запросе после обновления)
+const ENTRY_COLUMNS = ["spin_pct INTEGER DEFAULT 0", "spin_points INTEGER DEFAULT 0", "bounty_in INTEGER DEFAULT 0", "bounty_out INTEGER DEFAULT 0", "cap_cut INTEGER DEFAULT 0"];
+
+/* Пачинко: 10 лунок от 2% до 50%. Шанс выпадения (в сумме 100), в среднем ≈9%. */
+const SPIN_TABLE = [[2, 13], [3, 12], [4, 11], [5, 11], [6, 11], [8, 11], [10, 10], [15, 10], [25, 7], [50, 4]];
 
 const DEFAULT_SETTINGS = {
   structure: {
@@ -85,6 +92,71 @@ const setSetting = (db, key, value) =>
 function placePoints(sc, n, place, knockouts = 0, rebuys = 0) {
   const pts = sc.base + sc.step * (n - place) + (place === 1 ? sc.winner_bonus : 0) + sc.bounty * knockouts - sc.rebuy_penalty * rebuys;
   return Math.max(sc.base, Math.trunc(pts));
+}
+
+let SCHEMA_READY = false;
+async function ensureSchema(env) {
+  if (SCHEMA_READY) return;
+  for (const sql of SCHEMA) await env.DB.prepare(sql).run();
+  for (const col of ENTRY_COLUMNS) { try { await env.DB.prepare(`ALTER TABLE entries ADD COLUMN ${col}`).run(); } catch (e) { /* уже есть */ } }
+  const db = mkDb(env);
+  if (!(await db.q("SELECT 1 AS o FROM settings WHERE key='fair_v1'", [], true))) {
+    const sc = await getSetting(db, "scoring");
+    for (const t of await db.q("SELECT id FROM tournaments WHERE status='finished'")) {
+      const ents = await db.q("SELECT * FROM entries WHERE tournament_id=? AND status='in' AND place IS NOT NULL", [t.id]);
+      const fix = ents.filter(e => e.base_points == null).map(e => ["UPDATE entries SET base_points=? WHERE tournament_id=? AND tg_id=?", [placePoints(sc, ents.length, e.place, e.knockouts, e.rebuys), t.id, e.tg_id]]);
+      await db.tx(fix);
+      await settle(db, t.id);
+    }
+    await setSetting(db, "fair_v1", utcIso());
+  }
+  SCHEMA_READY = true;
+}
+
+/* ───────────── честный подсчёт очков ─────────────
+   Итог = очки за место − проигранное (ставка, награда за голову) + выигранное (ставка, награда, пачинко).
+   Выигранное НЕ может поднять игрока выше того, кто вылетел позже: максимум — очки места выше минус 1.
+   Победителя ограничивать некому. */
+async function settle(db, tid) {
+  const ents = await db.q("SELECT * FROM entries WHERE tournament_id=? AND status='in' AND place IS NOT NULL", [tid]);
+  const spins = await db.q("SELECT tg_id, SUM(pct) AS pct FROM spins WHERE tournament_id=? GROUP BY tg_id", [tid]).catch(() => []);
+  const bnt = await db.q("SELECT from_id, paid_to, amount FROM bounties WHERE tournament_id=? AND status='paid'", [tid]).catch(() => []);
+  const baseAt = {};
+  for (const e of ents) baseAt[e.place] = e.base_points || 0;
+  const pctOf = Object.fromEntries(spins.map(r => [r.tg_id, r.pct || 0]));
+  const stmts = [];
+  for (const e of ents) {
+    const base = e.base_points || 0;
+    const won = e.bet_status === "won", lost = e.bet_status === "lost";
+    const betGain = won ? Math.max(0, (e.bet_payout || 0) - (e.bet_stake || 0)) : 0;
+    const betLoss = lost ? (e.bet_stake || 0) : 0;
+    const bIn = bnt.filter(b => b.paid_to === e.tg_id).reduce((a, b) => a + b.amount, 0);
+    const bOut = bnt.filter(b => b.from_id === e.tg_id).reduce((a, b) => a + b.amount, 0);
+    const pct = pctOf[e.tg_id] || 0;
+    const spinPts = Math.round(base * pct / 100);
+    const floor = Math.max(0, base - betLoss - bOut);
+    const gains = betGain + bIn + spinPts;
+    let points = floor + gains;
+    if (e.place > 1 && baseAt[e.place - 1] != null) {
+      const cap = baseAt[e.place - 1] - 1;
+      points = Math.max(floor, Math.min(points, cap));
+    }
+    stmts.push(["UPDATE entries SET points=?, spin_pct=?, spin_points=?, bounty_in=?, bounty_out=?, cap_cut=? WHERE tournament_id=? AND tg_id=?",
+      [points, pct, spinPts, bIn, bOut, floor + gains - points, tid, e.tg_id]]);
+  }
+  await db.tx(stmts);
+}
+
+function rollSpin() {
+  let r = Math.random() * SPIN_TABLE.reduce((a, [, w]) => a + w, 0), pct = SPIN_TABLE[0][0];
+  for (const [v, w] of SPIN_TABLE) { if ((r -= w) < 0) { pct = v; break; } }
+  const slots = shuffle(SPIN_TABLE.map(([v]) => v));
+  return { pct, slots, slot: slots.indexOf(pct) };
+}
+
+async function committed(db, tid, e) {
+  const own = await db.q("SELECT COALESCE(SUM(amount),0) AS s FROM bounties WHERE tournament_id=? AND from_id=? AND status IN ('open','paid')", [tid, e.tg_id], true);
+  return { bounty: own ? own.s : 0, bet: e.bet_status === "placed" ? (e.bet_stake || 0) : 0 };
 }
 
 /* ───────────── утилиты ───────────── */
@@ -252,6 +324,10 @@ async function fullT(db, t, uid, light = false) {
   });
   out.avg_stack = alive.length ? Math.round(out.chips_total / alive.length) : 0;
   out.bet_coef_now = t.status === "running" && alive.length >= 2 ? await betCoef(db, alive.length) : null;
+  const scF = await getSetting(db, "scoring");
+  for (const e of ins) if (e.place && e.place > 1) e.cap_est = placePoints(scF, ins.length, e.place - 1, 0, 0) - 1;
+  out.bounties = await db.q(`SELECT b.id, b.from_id, b.target_id, b.amount, b.status, b.paid_to FROM bounties b WHERE b.tournament_id=? AND b.status!='void' ORDER BY b.id`, [tid]).catch(() => []);
+  out.spins = await db.q("SELECT id, tg_id, victim_id, pct FROM spins WHERE tournament_id=? ORDER BY id", [tid]).catch(() => []);
   const pos = wait.findIndex(e => e.tg_id === uid);
   out.position = pos >= 0 ? pos + 1 : null;
   if (light) return out;
@@ -368,28 +444,40 @@ async function finish(db, t) {
       if (e.bet_pick === winner) { status = "won"; payout = Math.round(e.bet_stake * e.bet_coef); }
       else status = "lost";
     } else if (status === "pending") status = "expired";
-    const stake = (status === "won" || status === "lost") ? e.bet_stake : 0;
-    const points = Math.max(0, base - stake + payout);
-    stmts.push(["UPDATE entries SET place=?, base_points=?, points=?, bet_status=?, bet_payout=? WHERE tournament_id=? AND tg_id=?",
-      [place, base, points, status, payout, tid, e.tg_id]]);
+    stmts.push(["UPDATE entries SET place=?, base_points=?, bet_status=?, bet_payout=? WHERE tournament_id=? AND tg_id=?",
+      [place, base, status, payout, tid, e.tg_id]]);
   }
-  stmts.push(["UPDATE predictions SET correct = (pick_id = ?) WHERE tournament_id=?", [winner, tid]]);
-  stmts.push(["DELETE FROM entries WHERE tournament_id=? AND status='wait'", [tid]]);
+  // награда за голову победителя никому не досталась — очки возвращаются
+  stmts.push(["UPDATE bounties SET status='void' WHERE tournament_id=? AND status='open'", [tid]]);
+  await db.tx(stmts);
+  await settle(db, tid);
+
+  const fin = [];
+  fin.push(["UPDATE predictions SET correct = (pick_id = ?) WHERE tournament_id=?", [winner, tid]]);
+  fin.push(["DELETE FROM entries WHERE tournament_id=? AND status='wait'", [tid]]);
   const c = loadClock(t);
   if (c && c.running) { c.remaining = Math.max(0, c.ends_at - nowMs()); c.running = false; }
-  stmts.push(["UPDATE tournaments SET status='finished', finished_at=?, clock=? WHERE id=?", [utcIso(), c ? JSON.stringify(c) : null, tid]]);
-  await db.tx(stmts);
+  fin.push(["UPDATE tournaments SET status='finished', finished_at=?, clock=? WHERE id=?", [utcIso(), c ? JSON.stringify(c) : null, tid]]);
+  await db.tx(fin);
 
   const res = await db.q(`SELECT e.*, p.name FROM entries e JOIN players p ON p.tg_id=e.tg_id WHERE e.tournament_id=? ORDER BY e.place`, [tid]);
   const names = Object.fromEntries(res.map(e => [e.tg_id, e.name]));
   const medals = { 1: "🥇", 2: "🥈", 3: "🥉" };
-  const lines = res.map(e => `${medals[e.place] || e.place + "."} ${esc(e.name)} — ${e.points} очк.` + (e.knockouts ? `  🎯${e.knockouts}` : ""));
+  const lines = res.map(e => `${medals[e.place] || e.place + "."} ${esc(e.name)} — ${e.points} очк.` + (e.knockouts ? `  🎯${e.knockouts}` : "")
+    + (e.spin_pct ? `  🎰+${e.spin_pct}%` : ""));
   const bets = res.filter(e => e.bet_status === "won" || e.bet_status === "lost");
   const betLines = bets.map(e => `${e.bet_status === "won" ? "✅" : "❌"} ${esc(e.name)} → ${esc(names[e.bet_pick] || "?")}: ${e.bet_stake} × ${numFmt(e.bet_coef)}`
     + (e.bet_status === "won" ? ` = +${e.bet_payout - e.bet_stake}` : ` = −${e.bet_stake}`));
+  const bnt = await db.q("SELECT * FROM bounties WHERE tournament_id=? AND status IN ('paid','void')", [tid]);
+  const bLines = bnt.map(b => b.status === "paid"
+    ? `💰 ${esc(names[b.from_id] || "?")} → голова ${esc(names[b.target_id] || "?")}: ${b.amount} забрал ${esc(names[b.paid_to] || "?")}`
+    : `💰 ${esc(names[b.from_id] || "?")} → голова ${esc(names[b.target_id] || "?")}: никто не взял, ${b.amount} вернулись`);
+  const capped = res.filter(e => e.cap_cut > 0);
   const right = await db.q(`SELECT p.name FROM predictions pr JOIN players p ON p.tg_id=pr.tg_id WHERE pr.tournament_id=? AND pr.correct=1`, [tid]);
   const text = `🏆 <b>Итоги: ${esc(t.title)}</b>\n\n` + lines.join("\n")
     + (betLines.length ? "\n\n🎲 <b>Ставки на победителя</b>\n" + betLines.join("\n") : "")
+    + (bLines.length ? "\n\n💰 <b>Награды за голову</b>\n" + bLines.join("\n") : "")
+    + (capped.length ? `\n\n⚖️ Потолок сработал: ${capped.map(e => `${esc(e.name)} (−${e.cap_cut})`).join(", ")} — выше вылетевших позже не подняться` : "")
     + (right.length ? `\n\n🔮 Угадали в прогнозе: ${right.map(r => esc(r.name)).join(", ")}` : "");
   const predUsers = (await db.q("SELECT tg_id FROM predictions WHERE tournament_id=?", [tid])).map(p => p.tg_id);
   return [[uniq(res.map(e => e.tg_id).concat(predUsers)), text]];
@@ -407,6 +495,7 @@ function b64ToBytes(data) {
 
 async function tournamentAction(db, ctx, tid, action, b, env) {
   const uid = ctx.uid;
+  const out_extra = {};
   const t = await getT(db, tid);
   await ensurePlayer(db, ctx.user);
   let notify = [], event = null;
@@ -498,9 +587,22 @@ async function tournamentAction(db, ctx, tid, action, b, env) {
       const betState = place - 1 >= 2 ? "pending" : "expired";
       const stmts = [["UPDATE entries SET place=?, knocked_by=?, busted_at=?, base_points=?, bet_status=?, bet_pick=NULL, bet_stake=0, bet_coef=0, bet_payout=0 WHERE tournament_id=? AND tg_id=?",
         [place, by, utcIso(), base, betState, tid, target]]];
-      if (by) stmts.push(["UPDATE entries SET knockouts = knockouts + 1 WHERE tournament_id=? AND tg_id=?", [tid, by]]);
+      let spin = null;
+      if (by) {
+        stmts.push(["UPDATE entries SET knockouts = knockouts + 1 WHERE tournament_id=? AND tg_id=?", [tid, by]]);
+        spin = rollSpin();
+        stmts.push(["INSERT INTO spins(tournament_id, tg_id, victim_id, pct, slots, slot) VALUES(?,?,?,?,?,?)", [tid, by, target, spin.pct, JSON.stringify(spin.slots), spin.slot]]);
+        stmts.push(["UPDATE bounties SET status='paid', paid_to=? WHERE tournament_id=? AND target_id=? AND status='open'", [by, tid, target]]);
+      } else {
+        stmts.push(["UPDATE bounties SET status='void' WHERE tournament_id=? AND target_id=? AND status='open'", [tid, target]]);
+      }
+      const paidB = by ? await db.q("SELECT b.amount, p.name FROM bounties b JOIN players p ON p.tg_id=b.from_id WHERE b.tournament_id=? AND b.target_id=? AND b.status='open'", [tid, target]) : [];
       await db.tx(stmts);
       event = "bust";
+      if (spin) {
+        const names = Object.fromEntries((await db.q("SELECT tg_id, name FROM players WHERE tg_id IN (?,?)", [by, target])).map(p => [p.tg_id, p.name]));
+        out_extra.spin = { ...spin, tg_id: by, victim_id: target, name: names[by], victim: names[target], bounty: paidB.reduce((a, b) => a + b.amount, 0) };
+      }
       if (place === 2) { notify = notify.concat(await finish(db, await getT(db, tid))); event = "finished"; }
     } else if (action === "unbust") {
       if (t.status !== "running") throw new ApiError("Турнир не идёт");
@@ -515,6 +617,9 @@ async function tournamentAction(db, ctx, tid, action, b, env) {
       const p0 = last.place;
       const stmts = [["UPDATE entries SET place=NULL, knocked_by=NULL, busted_at=NULL, base_points=NULL, bet_status='none', bet_pick=NULL, bet_stake=0, bet_coef=0, bet_payout=0 WHERE tournament_id=? AND tg_id=?", [tid, last.tg_id]]];
       if (last.knocked_by) stmts.push(["UPDATE entries SET knockouts = MAX(0, knockouts - 1) WHERE tournament_id=? AND tg_id=?", [tid, last.knocked_by]]);
+      stmts.push(["DELETE FROM spins WHERE tournament_id=? AND victim_id=?", [tid, last.tg_id]]);
+      stmts.push(["UPDATE bounties SET status='open', paid_to=NULL WHERE tournament_id=? AND target_id=? AND status IN ('paid','void')", [tid, last.tg_id]]);
+      stmts.push(["DELETE FROM bounties WHERE tournament_id=? AND from_id=?", [tid, last.tg_id]]);
       await db.tx(stmts);
       const sc = await getSetting(db, "scoring"), nAll = await countIn(db, tid);
       const later = await db.q("SELECT * FROM entries WHERE tournament_id=? AND status='in' AND place IS NOT NULL AND place < ?", [tid, p0]);
@@ -540,23 +645,46 @@ async function tournamentAction(db, ctx, tid, action, b, env) {
         const pick = toInt(b.pick);
         if (!alive.some(a => a.tg_id === pick)) throw new ApiError("Ставить можно только на того, кто ещё в игре");
         const stake = toInt(b.stake);
-        if (stake < 1 || stake > (e.base_points || 0)) throw new ApiError(`Ставка — от 1 до ${e.base_points} очков`);
+        const busy = await committed(db, tid, e);
+        const free = Math.max(0, (e.base_points || 0) - busy.bounty);
+        if (stake < 1 || stake > free) throw new ApiError(free ? `Ставка — от 1 до ${free} очков` : "Все очки уже ушли на награду за голову");
         const coef = await betCoef(db, alive.length);
         await db.x("UPDATE entries SET bet_status='placed', bet_pick=?, bet_stake=?, bet_coef=? WHERE tournament_id=? AND tg_id=?", [pick, stake, coef, tid, target]);
         event = "bet_placed";
+      }
+    } else if (action === "bounty" || action === "bounty_cancel") {
+      if (t.status !== "running") throw new ApiError("Награды объявляются только во время игры");
+      const e = await db.q("SELECT * FROM entries WHERE tournament_id=? AND tg_id=? AND status='in'", [tid, target], true);
+      if (!e || e.place === null) throw new ApiError("Награду объявляет выбывший игрок");
+      if (action === "bounty_cancel") {
+        await db.x("DELETE FROM bounties WHERE tournament_id=? AND from_id=? AND status='open'", [tid, target]);
+        event = "bounty_cancel";
+      } else {
+        const victim = toInt(b.target);
+        const alive = await aliveOf(db, tid);
+        if (!alive.some(a => a.tg_id === victim)) throw new ApiError("Награду можно назначить только за того, кто ещё в игре");
+        if (alive.length < 2) throw new ApiError("Победитель уже ясен");
+        await db.x("DELETE FROM bounties WHERE tournament_id=? AND from_id=? AND status='open'", [tid, target]);
+        const busy = await committed(db, tid, e);
+        const free = Math.max(0, (e.base_points || 0) - busy.bet - busy.bounty);
+        const amount = toInt(b.amount);
+        if (amount < 1 || amount > free) throw new ApiError(free ? `Награда — от 1 до ${free} очков` : "Свободных очков не осталось");
+        await db.x("INSERT INTO bounties(tournament_id, from_id, target_id, amount) VALUES(?,?,?,?)", [tid, target, victim, amount]);
+        event = "bounty";
       }
     } else if (action === "clock") {
       const c = loadClock(t) || await freshClock(db);
       await clockAction(db, c, String(b.cmd));
       await db.x("UPDATE tournaments SET clock=? WHERE id=?", [JSON.stringify(c), tid]);
     } else if (action === "delete") {
-      await db.tx(["entries", "rsvp", "predictions", "photos"].map(tbl => [`DELETE FROM ${tbl} WHERE tournament_id=?`, [tid]])
+      await db.tx(["entries", "rsvp", "predictions", "photos", "bounties", "spins"].map(tbl => [`DELETE FROM ${tbl} WHERE tournament_id=?`, [tid]])
         .concat([["DELETE FROM tournaments WHERE id=?", [tid]]]));
       return { deleted: true };
     } else throw new ApiError("Неизвестное действие");
   }
 
   const out = await fullT(db, await getT(db, tid), uid);
+  Object.assign(out, out_extra);
   out.event = event;
   if (notify.length) out._notify = notify;
   return out;
@@ -873,7 +1001,8 @@ async function servePhoto(env, ctx, fid) {
 
 async function setup(env, origin) {
   const db = mkDb(env);
-  for (const s of SCHEMA) await env.DB.prepare(s).run();
+  SCHEMA_READY = false;
+  await ensureSchema(env);
   const appUrl = origin + "/";
   const hook = await tgApi(env, "setWebhook", { url: `${origin}/tg`, secret_token: await hookSecret(env), drop_pending_updates: false, allowed_updates: ["message"] });
   const menu = await tgApi(env, "setChatMenuButton", { menu_button: { type: "web_app", text: "Клуб", web_app: { url: appUrl } } });
@@ -890,6 +1019,7 @@ async function handleApi(request, env, ctx, url) {
   const uid = Number(user.id);
   const admins = String(env.ADMIN_IDS || "").split(",").map(s => s.trim()).filter(Boolean).map(Number);
   const c = { uid, user, admin: admins.includes(uid) };
+  await ensureSchema(env);
   const db = mkDb(env);
   const club = env.CLUB_NAME || "Домашний покерный клуб";
   const appUrl = url.origin + "/";
